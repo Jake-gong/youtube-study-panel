@@ -14,13 +14,15 @@
 - 下载当前字幕为 `SRT`、`VTT` 或 `TXT`
 - 字幕数据只在浏览器本地处理
 
-## 安装
+## 下载与安装
 
-1. 打开 `chrome://extensions` 或 `edge://extensions`
-2. 开启“开发者模式”
-3. 点击“加载已解压的扩展程序”
-4. 选择本项目文件夹
-5. 打开或刷新一个带字幕的 YouTube 视频
+1. 打开 [最新版本下载页面](https://github.com/Jake-gong/youtube-study-panel/releases/latest)
+2. 下载 `youtube-study-panel-v0.1.7.zip` 并解压
+3. 打开 `chrome://extensions` 或 `edge://extensions`
+4. 开启“开发者模式”
+5. 点击“加载已解压的扩展程序”
+6. 选择解压后的 `youtube-study-panel` 文件夹
+7. 打开或刷新一个带字幕的 YouTube 视频
 
 ## 使用
 
@@ -35,6 +37,14 @@
 - 依赖 YouTube 当前页面提供的字幕轨道；YouTube 改版后可能需要维护。
 - 无字幕、受限字幕和部分直播字幕无法读取。
 - 第一版不包含翻译、单词查询和云同步。
+
+## 隐私
+
+字幕只在浏览器本地处理，不会上传到第三方服务器。详情见 [PRIVACY.md](./PRIVACY.md)。
+
+## 开源许可
+
+本项目采用 [MIT License](./LICENSE)。
 
 ## 更新记录
 
