@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Study Panel",
+  "version": "0.1.7",
+  "description": "Interactive YouTube transcript, sentence replay, fine-grained playback speed, and subtitle downloads.",
+  "minimum_chrome_version": "111",
+  "permissions": ["storage"],
+  "host_permissions": ["*://*.youtube.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["page-bridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_end"
+    }
+  ]
+}
