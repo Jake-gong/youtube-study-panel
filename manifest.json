@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "YouTube Study Panel",
-  "version": "0.1.7",
-  "description": "Interactive YouTube transcript, sentence replay, fine-grained playback speed, and subtitle downloads.",
+  "version": "0.2.2",
+  "description": "Interactive YouTube transcript, sentence and A-B looping, fine-grained playback speed, and subtitle downloads.",
   "minimum_chrome_version": "111",
   "permissions": ["storage"],
   "host_permissions": ["*://*.youtube.com/*"],

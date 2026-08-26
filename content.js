@@ -6,6 +6,7 @@
   const CAPTION_REQUEST_EVENT = 'youtube-study-caption-request';
   const CAPTION_RESPONSE_EVENT = 'youtube-study-caption-response';
   const SETTINGS_KEY = 'youtubeStudySettings';
+  const RANGE_LOOP_STORAGE_PREFIX = 'youtubeStudyRangeLoop:';
   const RATE_MIN = 0.25;
   const RATE_MAX = 2;
   const RATE_STEP = 0.05;
@@ -40,6 +41,17 @@
   let playerResizeObserver = null;
   let observedPlayer = null;
   let captionRequestSequence = 0;
+  let rangeLoopA = null;
+  let rangeLoopB = null;
+  let rangeLooping = false;
+  let rangeLoopTickId = 0;
+  let rangeLoopTickVideo = null;
+  let rangeLoopSaveTimer = 0;
+  let rangeLoopLoadToken = 0;
+  let rangeLoopPreviousState = false;
+  let rangeLoopResizeObserver = null;
+  let rangeLoopDragPoint = null;
+  let rangeLoopDragWasPlaying = false;
   const captionCache = new Map();
   const pendingCaptionRequests = new Map();
 
@@ -92,6 +104,298 @@
       .replace(/[\u200B-\u200D\uFEFF]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
+  }
+
+  function rangeLoopStorageKey(videoId) {
+    return `${RANGE_LOOP_STORAGE_PREFIX}${videoId}`;
+  }
+
+  function knownVideoDuration() {
+    return video && Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null;
+  }
+
+  function normalizeRangePoint(value, duration) {
+    return Number.isFinite(value) && value >= 0 && (duration === null || value <= duration) ? value : null;
+  }
+
+  function validateRangeLoop() {
+    const previousA = rangeLoopA;
+    const previousB = rangeLoopB;
+    const previousLooping = rangeLooping;
+    const duration = knownVideoDuration();
+    rangeLoopA = normalizeRangePoint(rangeLoopA, duration);
+    rangeLoopB = normalizeRangePoint(rangeLoopB, duration);
+    if (rangeLoopA !== null && rangeLoopB !== null && rangeLoopB <= rangeLoopA) rangeLoopB = null;
+    if (rangeLoopA === null || rangeLoopB === null) rangeLooping = false;
+    return !Object.is(previousA, rangeLoopA)
+      || !Object.is(previousB, rangeLoopB)
+      || previousLooping !== rangeLooping;
+  }
+
+  function saveRangeLoop() {
+    if (!currentVideoId) return;
+    const videoId = currentVideoId;
+    const key = rangeLoopStorageKey(videoId);
+    clearTimeout(rangeLoopSaveTimer);
+    rangeLoopSaveTimer = setTimeout(() => {
+      if (videoId !== currentVideoId) return;
+      if (rangeLoopA === null && rangeLoopB === null) {
+        chrome.storage.local.remove(key);
+      } else {
+        chrome.storage.local.set({
+          [key]: { a: rangeLoopA, b: rangeLoopB, loop: rangeLooping }
+        });
+      }
+    }, 300);
+  }
+
+  function loadRangeLoop(videoId) {
+    if (!videoId) return;
+    const token = ++rangeLoopLoadToken;
+    const key = rangeLoopStorageKey(videoId);
+    chrome.storage.local.get(key, (result) => {
+      if (token !== rangeLoopLoadToken || videoId !== currentVideoId) return;
+      const stored = result && result[key];
+      if (!stored || typeof stored !== 'object') return;
+      const duration = knownVideoDuration();
+      rangeLoopA = normalizeRangePoint(stored.a, duration);
+      rangeLoopB = normalizeRangePoint(stored.b, duration);
+      if (rangeLoopA !== null && rangeLoopB !== null && rangeLoopB <= rangeLoopA) rangeLoopB = null;
+      rangeLooping = !!stored.loop && rangeLoopA !== null && rangeLoopB !== null;
+      if (rangeLooping) startRangeLoopTick();
+      refreshRangeLoopUI();
+      if (!Object.is(rangeLoopA, stored.a)
+          || !Object.is(rangeLoopB, stored.b)
+          || rangeLooping !== !!stored.loop) saveRangeLoop();
+    });
+  }
+
+  function setRangeLoopVisibility(id, visible) {
+    const element = byId(id);
+    if (element) element.hidden = !visible;
+  }
+
+  function pulseRangeLoopElement(element, className) {
+    if (!element) return;
+    element.classList.remove(className);
+    void element.offsetWidth;
+    element.classList.add(className);
+  }
+
+  function refreshRangeLoopUI() {
+    const hasA = rangeLoopA !== null;
+    const hasB = rangeLoopB !== null;
+    setRangeLoopVisibility('ytl-pillA', hasA);
+    setRangeLoopVisibility('ytl-undoA', hasA);
+    setRangeLoopVisibility('ytl-pillB', hasB);
+    setRangeLoopVisibility('ytl-undoB', hasB);
+    if (hasA && byId('ytl-pillA')) byId('ytl-pillA').textContent = formatClock(rangeLoopA);
+    if (hasB && byId('ytl-pillB')) byId('ytl-pillB').textContent = formatClock(rangeLoopB);
+    const toggle = byId('ytl-loop');
+    if (toggle) {
+      toggle.classList.toggle('active', rangeLooping);
+      toggle.setAttribute('aria-pressed', String(rangeLooping));
+    }
+    if (rangeLooping !== rangeLoopPreviousState) {
+      rangeLoopPreviousState = rangeLooping;
+      pulseRangeLoopElement(byId('ytl-knobface'), 'squash');
+    }
+    const setA = byId('ytl-setA');
+    const setB = byId('ytl-setB');
+    if (setA) setA.classList.toggle('set', hasA);
+    if (setB) setB.classList.toggle('set', hasB);
+    setRangeLoopVisibility('ytl-clear', hasA || hasB);
+    updateRangeLoopMarkers();
+  }
+
+  function cancelRangeLoopTick() {
+    if (!rangeLoopTickId) return;
+    if (rangeLoopTickVideo && typeof rangeLoopTickVideo.cancelVideoFrameCallback === 'function') {
+      rangeLoopTickVideo.cancelVideoFrameCallback(rangeLoopTickId);
+    } else {
+      cancelAnimationFrame(rangeLoopTickId);
+    }
+    rangeLoopTickId = 0;
+    rangeLoopTickVideo = null;
+  }
+
+  function startRangeLoopTick() {
+    if (rangeLoopTickId || !rangeLooping || !video || video.paused || video.ended) return;
+    rangeLoopTickVideo = video;
+    rangeLoopTickId = typeof video.requestVideoFrameCallback === 'function'
+      ? video.requestVideoFrameCallback(runRangeLoopTick)
+      : requestAnimationFrame(runRangeLoopTick);
+  }
+
+  function runRangeLoopTick() {
+    rangeLoopTickId = 0;
+    rangeLoopTickVideo = null;
+    checkRangeLoopPoint();
+    startRangeLoopTick();
+  }
+
+  function checkRangeLoopPoint() {
+    if (!rangeLooping || !video || rangeLoopA === null || rangeLoopB === null) return;
+    if (video.currentTime >= rangeLoopB - 0.05) video.currentTime = rangeLoopA;
+  }
+
+  function startRangeLoop() {
+    if (rangeLoopA === null || rangeLoopB === null || rangeLoopB <= rangeLoopA) return;
+    stopSentenceLoop();
+    rangeLooping = true;
+    startRangeLoopTick();
+    refreshRangeLoopUI();
+    saveRangeLoop();
+  }
+
+  function stopRangeLoop(save = true) {
+    rangeLooping = false;
+    cancelRangeLoopTick();
+    refreshRangeLoopUI();
+    if (save) saveRangeLoop();
+  }
+
+  function toggleRangeLoop() {
+    if (rangeLooping) stopRangeLoop();
+    else startRangeLoop();
+  }
+
+  function setRangeLoopPoint(letter) {
+    if (!video) return;
+    const point = video.currentTime;
+    if (letter === 'A') {
+      if (rangeLoopB !== null && point >= rangeLoopB) rangeLoopB = null;
+      rangeLoopA = point;
+    } else {
+      if (rangeLoopA !== null && point <= rangeLoopA) rangeLoopA = null;
+      rangeLoopB = point;
+    }
+    pulseRangeLoopElement(byId(`ytl-set${letter}`), 'flash');
+    if (rangeLoopA !== null && rangeLoopB !== null && rangeLoopB > rangeLoopA) startRangeLoop();
+    else {
+      stopRangeLoop(false);
+      saveRangeLoop();
+    }
+  }
+
+  function removeRangeLoopPoint(letter) {
+    if (letter === 'A') rangeLoopA = null;
+    else rangeLoopB = null;
+    stopRangeLoop(false);
+    saveRangeLoop();
+  }
+
+  function clearRangeLoop() {
+    rangeLoopA = null;
+    rangeLoopB = null;
+    stopRangeLoop(false);
+    saveRangeLoop();
+  }
+
+  function resetRangeLoop() {
+    rangeLoopLoadToken++;
+    cancelRangeLoopTick();
+    rangeLoopA = null;
+    rangeLoopB = null;
+    rangeLooping = false;
+    refreshRangeLoopUI();
+  }
+
+  function ensureRangeLoopBar() {
+    const existing = byId('ytl-loop-bar');
+    if (existing) {
+      updateRangeLoopBarDensity();
+      return;
+    }
+    const controls = document.querySelector('.ytp-left-controls');
+    if (!controls) return;
+    const bar = document.createElement('div');
+    bar.id = 'ytl-loop-bar';
+    bar.className = 'yt-loop-bar in-player';
+    bar.innerHTML = `
+      <button class="yt-loop-btn btn-a" id="ytl-setA" type="button" title="设置循环起点（Shift+A）">A</button>
+      <button class="yt-loop-btn undo-btn" id="ytl-undoA" type="button" title="删除 A 点" hidden>×</button>
+      <span class="yt-loop-pill pill-a" id="ytl-pillA" hidden></span>
+      <span class="yt-loop-sep"></span>
+      <button class="yt-loop-btn btn-b" id="ytl-setB" type="button" title="设置循环终点（Shift+B）">B</button>
+      <button class="yt-loop-btn undo-btn" id="ytl-undoB" type="button" title="删除 B 点" hidden>×</button>
+      <span class="yt-loop-pill pill-b" id="ytl-pillB" hidden></span>
+      <span class="yt-loop-sep"></span>
+      <button class="yt-loop-toggle" id="ytl-loop" type="button" title="开启或暂停 A-B 循环（Shift+L）" aria-label="开启或暂停 A-B 循环" aria-pressed="false">
+        <span class="yt-loop-knob"><span class="knob-face" id="ytl-knobface"><span class="ic ic-on">✓</span><span class="ic ic-off">×</span></span></span>
+      </button>
+      <span class="yt-loop-label">AB</span>
+      <button class="yt-loop-btn clear-btn" id="ytl-clear" type="button" title="清除循环点（Shift+X）" hidden>清除</button>`;
+    controls.appendChild(bar);
+    byId('ytl-setA').addEventListener('click', () => setRangeLoopPoint('A'));
+    byId('ytl-setB').addEventListener('click', () => setRangeLoopPoint('B'));
+    byId('ytl-undoA').addEventListener('click', () => removeRangeLoopPoint('A'));
+    byId('ytl-undoB').addEventListener('click', () => removeRangeLoopPoint('B'));
+    byId('ytl-loop').addEventListener('click', toggleRangeLoop);
+    byId('ytl-clear').addEventListener('click', clearRangeLoop);
+    bar.addEventListener('click', (event) => {
+      const button = event.target.closest('.yt-loop-btn');
+      if (button) pulseRangeLoopElement(button, 'pressed');
+    });
+    refreshRangeLoopUI();
+    updateRangeLoopBarDensity();
+    if (typeof ResizeObserver === 'function') {
+      if (rangeLoopResizeObserver) rangeLoopResizeObserver.disconnect();
+      rangeLoopResizeObserver = new ResizeObserver(updateRangeLoopBarDensity);
+      const player = document.querySelector('#movie_player');
+      if (player) rangeLoopResizeObserver.observe(player);
+    }
+  }
+
+  function updateRangeLoopBarDensity() {
+    const bar = byId('ytl-loop-bar');
+    const player = document.querySelector('#movie_player');
+    if (!bar || !player) return;
+    const width = player.getBoundingClientRect().width;
+    bar.classList.toggle('compact', width > 0 && width < 920);
+    bar.classList.toggle('ultra-compact', width > 0 && width < 620);
+  }
+
+  function ensureRangeLoopMarkers() {
+    const progressBar = document.querySelector('.ytp-progress-bar');
+    if (!progressBar) return;
+    ['A', 'B'].forEach((letter) => {
+      if (byId(`ytl-marker-${letter}`)) return;
+      const marker = document.createElement('div');
+      marker.id = `ytl-marker-${letter}`;
+      marker.className = `ytp-loop-marker ytp-loop-marker-${letter.toLowerCase()}`;
+      marker.setAttribute('aria-label', letter === 'A' ? 'A-B 循环起点' : 'A-B 循环终点');
+      marker.title = `${letter} 点：拖动微调`;
+      progressBar.appendChild(marker);
+      marker.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        rangeLoopDragPoint = letter;
+        marker.classList.add('dragging');
+        if (video) {
+          rangeLoopDragWasPlaying = !video.paused;
+          video.pause();
+        }
+      });
+    });
+    updateRangeLoopMarkers();
+  }
+
+  function updateRangeLoopMarkers() {
+    const duration = knownVideoDuration();
+    if (!duration) return;
+    const markerA = byId('ytl-marker-A');
+    const markerB = byId('ytl-marker-B');
+    if (markerA) {
+      markerA.hidden = rangeLoopA === null;
+      if (rangeLoopA !== null) markerA.style.left = `${rangeLoopA / duration * 100}%`;
+      markerA.classList.toggle('pulsing', rangeLooping);
+    }
+    if (markerB) {
+      markerB.hidden = rangeLoopB === null;
+      if (rangeLoopB !== null) markerB.style.left = `${rangeLoopB / duration * 100}%`;
+      markerB.classList.toggle('pulsing', rangeLooping);
+    }
   }
 
   function loadSettings() {
@@ -340,6 +644,7 @@
 
   function bindVideo(nextVideo) {
     if (nextVideo === video) return;
+    cancelRangeLoopTick();
     if (videoAbortController) videoAbortController.abort();
     videoAbortController = new AbortController();
     video = nextVideo;
@@ -347,6 +652,10 @@
     video.addEventListener('timeupdate', handleTimeUpdate, options);
     video.addEventListener('ratechange', handleRateChange, options);
     video.addEventListener('loadedmetadata', applyRememberedRate, options);
+    video.addEventListener('play', startRangeLoopTick, options);
+    video.addEventListener('pause', cancelRangeLoopTick, options);
+    video.addEventListener('ended', cancelRangeLoopTick, options);
+    video.addEventListener('durationchange', handleRangeLoopDurationChange, options);
     applyRememberedRate();
     updateRateUI();
   }
@@ -358,8 +667,19 @@
     saveSettings();
   }
 
+  function handleRangeLoopDurationChange() {
+    if (validateRangeLoop()) {
+      refreshRangeLoopUI();
+      saveRangeLoop();
+    } else {
+      updateRangeLoopMarkers();
+    }
+  }
+
   function handleTimeUpdate() {
     if (!video) return;
+    checkRangeLoopPoint();
+    updateRangeLoopMarkers();
     if (sentenceLoopIndex >= 0 && cues[sentenceLoopIndex]) {
       const cue = cues[sentenceLoopIndex];
       if (video.currentTime >= cue.end - 0.03) {
@@ -465,6 +785,7 @@
 
   function playCue(index, keepLoop) {
     if (!video || !cues[index]) return;
+    if (rangeLooping) stopRangeLoop();
     if (!keepLoop) stopSentenceLoop();
     cueHighlightLock = {
       index,
@@ -481,6 +802,7 @@
       return;
     }
     stopSentenceLoop();
+    if (rangeLooping) stopRangeLoop();
     sentenceLoopIndex = index;
     if (cueElements[index]) cueElements[index].classList.add('looping');
     const status = byId('yt-study-loop-status');
@@ -1026,6 +1348,8 @@
 
   function resetForVideo(nextVideoId) {
     currentVideoId = nextVideoId;
+    resetRangeLoop();
+    loadRangeLoop(nextVideoId);
     videoTitle = '';
     tracks = [];
     captionCache.clear();
@@ -1047,6 +1371,8 @@
     if (!nextVideo) return;
     bindVideo(nextVideo);
     ensureToggle();
+    ensureRangeLoopBar();
+    ensureRangeLoopMarkers();
     ensurePanel();
     observePlayerSize();
     const nextVideoId = getVideoId();
@@ -1060,6 +1386,61 @@
       inject();
     }, delay);
   }
+
+  document.addEventListener('mousemove', (event) => {
+    const duration = knownVideoDuration();
+    if (!rangeLoopDragPoint || !video || !duration) return;
+    const progressBar = document.querySelector('.ytp-progress-bar');
+    if (!progressBar) return;
+    const bounds = progressBar.getBoundingClientRect();
+    if (!bounds.width) return;
+    const ratio = clamp((event.clientX - bounds.left) / bounds.width, 0.005, 0.995);
+    const point = ratio * duration;
+    if (rangeLoopDragPoint === 'A' && rangeLoopB !== null && point >= rangeLoopB) return;
+    if (rangeLoopDragPoint === 'B' && rangeLoopA !== null && point <= rangeLoopA) return;
+    if (rangeLoopDragPoint === 'A') rangeLoopA = point;
+    else rangeLoopB = point;
+    if (rangeLoopA !== null && rangeLoopB !== null && rangeLoopB > rangeLoopA && !rangeLooping) {
+      stopSentenceLoop();
+      rangeLooping = true;
+      startRangeLoopTick();
+    }
+    refreshRangeLoopUI();
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!rangeLoopDragPoint) return;
+    const marker = byId(`ytl-marker-${rangeLoopDragPoint}`);
+    if (marker) marker.classList.remove('dragging');
+    if (rangeLoopDragWasPlaying && video) video.play().catch(() => {});
+    rangeLoopDragPoint = null;
+    rangeLoopDragWasPlaying = false;
+    refreshRangeLoopUI();
+    saveRangeLoop();
+  });
+
+  window.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.repeat || !event.shiftKey
+        || event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    if (target && (target.tagName === 'INPUT'
+        || target.tagName === 'TEXTAREA'
+        || target.tagName === 'SELECT'
+        || target.isContentEditable)) return;
+    if (!video) return;
+    let handled = true;
+    switch (event.key.toLowerCase()) {
+      case 'a': setRangeLoopPoint('A'); break;
+      case 'b': setRangeLoopPoint('B'); break;
+      case 'l': toggleRangeLoop(); break;
+      case 'x': clearRangeLoop(); break;
+      default: handled = false;
+    }
+    if (handled) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }, true);
 
   document.addEventListener(RESPONSE_EVENT, handleTrackResponse);
   document.addEventListener(CAPTION_RESPONSE_EVENT, handleCaptionResponse);

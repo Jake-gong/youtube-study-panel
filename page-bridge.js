@@ -115,8 +115,18 @@
     const videoId = request.videoId || requestedUrl.searchParams.get('v') || '';
     const languageCode = request.languageCode || requestedUrl.searchParams.get('lang') || '';
     const candidateVideoId = candidate.searchParams.get('v') || '';
-    const candidateLanguage = candidate.searchParams.get('tlang') || candidate.searchParams.get('lang') || '';
-    return (!videoId || candidateVideoId === videoId) && (!languageCode || candidateLanguage === languageCode);
+    const candidateLanguages = [
+      candidate.searchParams.get('lang') || '',
+      candidate.searchParams.get('tlang') || ''
+    ].filter(Boolean);
+    const requestedKind = request.kind || requestedUrl.searchParams.get('kind') || '';
+    const candidateKind = candidate.searchParams.get('kind') || '';
+    const videoMatches = !videoId
+      || candidateVideoId === videoId
+      || (!candidateVideoId && getVideoId() === videoId);
+    const languageMatches = !languageCode || candidateLanguages.includes(languageCode);
+    const kindMatches = !candidateKind || candidateKind === requestedKind;
+    return videoMatches && languageMatches && kindMatches;
   }
 
   function findCapturedCaption(request) {
@@ -163,6 +173,83 @@
     return preferred.concat(fallback).slice(0, Number.isFinite(limit) ? limit : 4);
   }
 
+  function findFreshCaptionUrls(request) {
+    const current = collectTracks();
+    if (request.videoId && current.videoId && request.videoId !== current.videoId) return [];
+    let matching = request.vssId
+      ? current.tracks.filter((track) => track.vssId === request.vssId)
+      : [];
+    if (!matching.length) {
+      matching = current.tracks.filter((track) => (
+        track.languageCode === request.languageCode
+        && (track.kind || '') === (request.kind || '')
+      ));
+    }
+    if (!matching.length) {
+      matching = current.tracks.filter((track) => track.languageCode === request.languageCode);
+    }
+    return matching.map((track) => track.baseUrl).filter(Boolean);
+  }
+
+  function applyRequestedCaptionVariant(value, requestedValue) {
+    try {
+      const candidate = new URL(value, location.origin);
+      const requested = new URL(requestedValue, location.origin);
+      const format = requested.searchParams.get('fmt');
+      if (format) candidate.searchParams.set('fmt', format);
+      else candidate.searchParams.delete('fmt');
+      const translationLanguage = requested.searchParams.get('tlang');
+      if (translationLanguage) candidate.searchParams.set('tlang', translationLanguage);
+      return candidate.toString();
+    } catch (error) {
+      return value;
+    }
+  }
+
+  function buildCaptionCandidates(request) {
+    const candidates = [];
+    const add = (value) => {
+      if (value && !candidates.includes(value)) candidates.push(value);
+    };
+    findRecordedCaptionUrls(request, 8).forEach(add);
+    findFreshCaptionUrls(request)
+      .map((value) => applyRequestedCaptionVariant(value, request.url))
+      .forEach(add);
+    add(request.url);
+    return candidates;
+  }
+
+  async function fetchCaptionCandidates(request) {
+    const candidateUrls = buildCaptionCandidates(request);
+    let lastError = '';
+    for (const candidateUrl of candidateUrls) {
+      try {
+        const response = await nativeFetch(candidateUrl, { credentials: 'include', cache: 'no-store' });
+        const body = await response.text();
+        if (response.ok && body.trim()) {
+          rememberCaptionResponse(response.url || candidateUrl, body);
+          return { body, status: response.status || 200, error: '' };
+        }
+        lastError = response.ok
+          ? (candidateUrls.length > 1 ? '字幕候选地址均未返回正文' : '播放器未生成可用的字幕请求')
+          : `YouTube 返回 HTTP ${response.status}`;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : '字幕网络请求失败';
+      }
+    }
+    return { body: '', status: 0, error: lastError || '未找到可用的字幕地址' };
+  }
+
+  async function waitForCaptionTracks(player, timeoutMs) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const trackList = player.getOption('captions', 'tracklist');
+      if (Array.isArray(trackList) && trackList.length) return trackList;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return [];
+  }
+
   async function askPlayerForCaptionBody(request) {
     const existing = findCapturedCaption(request);
     if (existing) return existing.body;
@@ -173,8 +260,7 @@
     try {
       if (typeof player.loadModule === 'function') player.loadModule('captions');
       originalTrack = player.getOption('captions', 'track') || null;
-      const trackList = player.getOption('captions', 'tracklist');
-      const availableTracks = Array.isArray(trackList) ? trackList : [];
+      const availableTracks = await waitForCaptionTracks(player, 2000);
       const targetTrack = availableTracks.find((track) => request.vssId && track.vssId === request.vssId)
         || availableTracks.find((track) => track.languageCode === request.languageCode && (!request.kind || track.kind === request.kind))
         || { languageCode: request.languageCode, kind: request.kind || '' };
@@ -266,32 +352,24 @@
     }
 
     try {
+      let directResult = await fetchCaptionCandidates(request);
+      if (directResult.body) {
+        sendCaptionResponse({ requestId, ok: true, status: directResult.status, body: directResult.body });
+        return;
+      }
+
       const capturedBody = await askPlayerForCaptionBody(request);
       if (capturedBody.trim()) {
         sendCaptionResponse({ requestId, ok: true, status: 200, body: capturedBody });
         return;
       }
 
-      const recordedUrls = findRecordedCaptionUrls(request);
-      const candidateUrls = recordedUrls.slice();
-      if (!candidateUrls.includes(url)) candidateUrls.push(url);
-      let lastError = '';
-      for (const candidateUrl of candidateUrls) {
-        try {
-          const response = await nativeFetch(candidateUrl, { credentials: 'include' });
-          const body = await response.text();
-          if (response.ok && body.trim()) {
-            sendCaptionResponse({ requestId, ok: true, status: response.status, body });
-            return;
-          }
-          lastError = response.ok
-            ? (recordedUrls.length ? '播放器字幕请求已发出，但未能截获正文' : '播放器未生成可用的字幕请求')
-            : `YouTube 返回 HTTP ${response.status}`;
-        } catch (error) {
-          lastError = error instanceof Error ? error.message : '字幕网络请求失败';
-        }
+      directResult = await fetchCaptionCandidates(request);
+      if (directResult.body) {
+        sendCaptionResponse({ requestId, ok: true, status: directResult.status, body: directResult.body });
+        return;
       }
-      sendCaptionResponse({ requestId, ok: false, error: lastError || '未找到可用的字幕地址' });
+      sendCaptionResponse({ requestId, ok: false, error: directResult.error });
     } catch (error) {
       sendCaptionResponse({
         requestId,
