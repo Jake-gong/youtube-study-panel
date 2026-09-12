@@ -1,7 +1,7 @@
 # YouTube Study Panel 项目文档
 
 > **项目路径**：`D:\obsidian文件夹\jake的obsidian\AI\project\YouTubeStudyExtension`（2026-09-07 自 `AI\chatgpt\` 迁入，符合新项目目录规范）
-> **当前版本**：v1.0.7（2026-09-09）
+> **当前版本**：v1.0.8（2026-09-12）
 > **定位**：个人开发的 YouTube 英语学习浏览器扩展（Chrome/Edge，Manifest V3），对标 Language Reactor 的核心精听工作流，轻量、本地优先、可分享分发。
 > **仓库**：github.com/Jake-gong/youtube-study-panel
 
@@ -140,6 +140,7 @@ scripts/build-local-dict.cjs   词典生成脚本（ECDICT→JSON）
 | 1.0.3 | 修复跟随当前滚动偏差：offsetTop（相对定位面板）→ getBoundingClientRect 差值，当前句精确居中 |
 | 1.0.4 | 字幕同步提速：短语切换由 timeupdate（~250ms 粒度）改为播放期 rAF 逐帧检测（~16ms），seek 即时刷新 |
 | 1.0.5 | 真实两行布局分页（overlayMeasure/paginateCue，保留原字号，响应宽度与字体）；AI 超时/取消/去重；设置与工具栏精简 |
+| 1.0.8 | 修复开面板卡顿数秒：分页测量 4500→300（整段快速通道），消除上万次强制重排 |
 | 1.0.7 | 修复悬停释义被短语切换/自动滚动误杀：锚点存活检测（dropStale/refresh），滚动改重定位 |
 | 1.0.6 | 修复切换滞后：dDurationMs 是显示时长导致相邻短语区间重叠、二分查找停在上一短语；词级+短语级结束时间钳制到后继开始，时间轴单调 |
 

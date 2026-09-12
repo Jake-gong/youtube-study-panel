@@ -1217,10 +1217,16 @@
   function buildOverlayChunks() {
     const measurement = overlayMeasure();
     // Only used before layout exists (or in DOM stubs); remeasure on first display.
-    const fits = measurement ? measurement.fits : text => text.split(/\s+/).length <= 12;
+    const fits = measurement ? measurement.fits : null;
     try {
-      overlayChunks = cues.flatMap((cue, sentenceIndex) =>
-        paginateCue(cue, fits, captionSegments).map(part => ({ ...part, sentenceIndex })));
+      overlayChunks = cues.flatMap((cue, sentenceIndex) => {
+        // 快速通道：整段一次测量，两行内直接单页（短语绝大多数如此）。
+        // 逐词测量只留给少数超长行，避免上万次强制布局阻塞主线程（面板打开卡顿数秒）。
+        if (!fits || fits(cue.text)) {
+          return [{ text: cue.text, start: cue.start, end: cue.end, sentenceIndex }];
+        }
+        return paginateCue(cue, fits, captionSegments).map(part => ({ ...part, sentenceIndex }));
+      });
     } finally {
       if (measurement) measurement.dispose();
     }

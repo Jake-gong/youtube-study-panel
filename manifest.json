@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube Study Panel",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Interactive YouTube transcript, A-B loop, auto-pause, on-video subtitles with hover/click word lookup (free dictionary, your own AI API key, or an offline downloadable dictionary), vocab saving and export.",
   "minimum_chrome_version": "111",
   "permissions": [
