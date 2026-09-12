@@ -1,0 +1,13 @@
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Editor / tool cache
+*.log
+*.zip
+.vscode/
+.idea/
+
+# Local dictionary source data (regenerate via scripts/build-local-dict.cjs)
+ecdict*.csv

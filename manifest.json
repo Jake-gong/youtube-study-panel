@@ -1,22 +1,55 @@
 {
   "manifest_version": 3,
   "name": "YouTube Study Panel",
-  "version": "0.2.2",
-  "description": "Interactive YouTube transcript, sentence and A-B looping, fine-grained playback speed, and subtitle downloads.",
+  "version": "1.0.7",
+  "description": "Interactive YouTube transcript, A-B loop, auto-pause, on-video subtitles with hover/click word lookup (free dictionary, your own AI API key, or an offline downloadable dictionary), vocab saving and export.",
   "minimum_chrome_version": "111",
-  "permissions": ["storage"],
-  "host_permissions": ["*://*.youtube.com/*"],
+  "permissions": [
+    "storage",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "https://api.dictionaryapi.dev/*",
+    "https://open.bigmodel.cn/*",
+    "https://api.deepseek.com/*",
+    "https://api.moonshot.cn/*",
+    "https://api.openai.com/*",
+    "https://dashscope.aliyuncs.com/*",
+    "https://raw.githubusercontent.com/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "dict/*"
+      ],
+      "matches": [
+        "*://*.youtube.com/*"
+      ]
+    }
+  ],
   "content_scripts": [
     {
-      "matches": ["*://*.youtube.com/*"],
-      "js": ["page-bridge.js"],
+      "matches": [
+        "*://*.youtube.com/*"
+      ],
+      "js": [
+        "page-bridge.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["*://*.youtube.com/*"],
-      "js": ["content.js"],
-      "css": ["styles.css"],
+      "matches": [
+        "*://*.youtube.com/*"
+      ],
+      "js": [
+        "study-core.js",
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ],
       "run_at": "document_end"
     }
   ]
